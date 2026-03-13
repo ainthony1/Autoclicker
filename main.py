@@ -156,47 +156,28 @@ ENTRY_BG = "#0a0a1a"
 BORDER = "#2a2a4a"
 
 
-class DarkButton(tk.Canvas):
-    """Custom rounded dark button."""
+class DarkButton(tk.Button):
+    """Styled dark button with hover effect."""
 
-    def __init__(self, parent, text="", command=None, width=120, height=34,
+    def __init__(self, parent, text="", command=None, width=12, height=1,
                  bg=ACCENT, fg=FG, hover_bg=ACCENT_HOVER, **kwargs):
-        super().__init__(parent, width=width, height=height,
-                         bg=parent["bg"], highlightthickness=0, **kwargs)
-        self.command = command
+        super().__init__(parent, text=text, command=command,
+                         bg=bg, fg=fg, activebackground=hover_bg,
+                         activeforeground=fg, bd=0, relief=tk.FLAT,
+                         font=("Segoe UI", 10, "bold"), cursor="hand2",
+                         width=width, height=height, **kwargs)
         self._bg = bg
         self._hover_bg = hover_bg
-        self._fg = fg
-        self._text = text
-        self._w = width
-        self._h = height
-        self._draw(bg)
-        self.bind("<Enter>", lambda e: self._draw(hover_bg))
-        self.bind("<Leave>", lambda e: self._draw(bg))
-        self.bind("<Button-1>", lambda e: self._on_click())
-
-    def _draw(self, fill):
-        self.delete("all")
-        r = 8
-        self.create_round_rect(2, 2, self._w - 2, self._h - 2, r, fill=fill, outline="")
-        self.create_text(self._w // 2, self._h // 2, text=self._text,
-                         fill=self._fg, font=("Segoe UI", 10, "bold"))
-
-    def create_round_rect(self, x1, y1, x2, y2, r, **kwargs):
-        points = [
-            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
-        ]
-        return self.create_polygon(points, smooth=True, **kwargs)
-
-    def _on_click(self):
-        if self.command:
-            self.command()
+        self.bind("<Enter>", lambda e: self.config(bg=hover_bg))
+        self.bind("<Leave>", lambda e: self.config(bg=self._bg))
 
     def set_text(self, text):
-        self._text = text
-        self._draw(self._bg)
+        self.config(text=text)
+
+    def set_colors(self, bg, hover_bg):
+        self._bg = bg
+        self._hover_bg = hover_bg
+        self.config(bg=bg, activebackground=hover_bg)
 
 
 class App(tk.Tk):
@@ -250,7 +231,7 @@ class App(tk.Tk):
                                   font=("Consolas", 10), bd=0, relief=tk.FLAT)
         self.cps_entry.pack(side=tk.LEFT, padx=(8, 8))
         DarkButton(cps_row, text="Apply", command=self.apply_cps,
-                   width=70, height=28).pack(side=tk.LEFT)
+                   width=8, height=1).pack(side=tk.LEFT)
 
         # Mouse button row
         btn_row = tk.Frame(settings, bg=BG_LIGHT)
@@ -298,10 +279,10 @@ class App(tk.Tk):
         action_row = tk.Frame(main, bg=BG)
         action_row.pack(fill=tk.X, pady=(4, 8))
         self.toggle_btn = DarkButton(action_row, text="ENABLE", command=self.on_toggle,
-                                     width=140, height=38, bg="#006400", hover_bg=GREEN)
+                                     width=14, height=1, bg="#006400", hover_bg=GREEN)
         self.toggle_btn.pack(side=tk.LEFT)
         DarkButton(action_row, text="QUIT", command=self.on_quit,
-                   width=80, height=38, bg="#8b0000", hover_bg=RED).pack(side=tk.RIGHT)
+                   width=8, height=1, bg="#8b0000", hover_bg=RED).pack(side=tk.RIGHT)
 
         # -- Footer --
         tk.Label(main, text="Press F6 to toggle  |  Move mouse to corner = emergency stop",
@@ -377,12 +358,9 @@ class App(tk.Tk):
         self.status_label.config(fg=GREEN if now_enabled else RED)
         self.toggle_btn.set_text("DISABLE" if now_enabled else "ENABLE")
         if now_enabled:
-            self.toggle_btn._bg = "#8b0000"
-            self.toggle_btn._hover_bg = RED
+            self.toggle_btn.set_colors("#8b0000", RED)
         else:
-            self.toggle_btn._bg = "#006400"
-            self.toggle_btn._hover_bg = GREEN
-        self.toggle_btn._draw(self.toggle_btn._bg)
+            self.toggle_btn.set_colors("#006400", GREEN)
 
     def on_tick(self, error: str | None = None):
         if error:
