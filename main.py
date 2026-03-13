@@ -1,5 +1,5 @@
 """
-Autoclicker v2 — Dark themed, F6 toggle, CPS or MAX mode
+Autoclicker v2 — Dark themed, F8 toggle, CPS or MAX mode
 
 Deps:
   pip install pyautogui pynput
@@ -12,7 +12,7 @@ Features:
 - MAX mode (fastest possible)
 - Randomized interval option (humanized clicking)
 - Live click counter
-- F6 hotkey toggle (changed from F4 to avoid browser conflicts)
+- F8 hotkey toggle (changed from F4 to avoid browser conflicts)
 """
 
 import random
@@ -285,7 +285,7 @@ class App(tk.Tk):
                    width=8, height=1, bg="#8b0000", hover_bg=RED).pack(side=tk.RIGHT)
 
         # -- Footer --
-        tk.Label(main, text="Press F6 to toggle  |  Move mouse to corner = emergency stop",
+        tk.Label(main, text="Press F8 to toggle  |  Move mouse to corner = emergency stop",
                  font=("Segoe UI", 8), bg=BG, fg="#555").pack(anchor="w", pady=(4, 0))
 
         # Worker thread
@@ -293,7 +293,7 @@ class App(tk.Tk):
                                        kwargs={"on_tick": self.on_tick}, daemon=True)
         self.worker.start()
 
-        # Global hotkey (F6)
+        # Global hotkey (F8)
         self.listener = keyboard.Listener(on_press=self.on_key_press)
         self.listener.daemon = True
         self.listener.start()
@@ -346,7 +346,7 @@ class App(tk.Tk):
 
     def on_key_press(self, key):
         try:
-            if key == keyboard.Key.f6:
+            if key == keyboard.Key.f8:
                 self.after(0, self.on_toggle)
         except Exception:
             pass
