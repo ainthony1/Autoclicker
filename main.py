@@ -1,14 +1,21 @@
 """
-Autoclicker — F4 toggle, CPS (0.1–500) or MAX mode
+Autoclicker v2 — Dark themed, F6 toggle, CPS or MAX mode
 
 Deps:
   pip install pyautogui pynput
 
-Notes:
-- MAX mode: no intentional sleeps; clicks as fast as possible (CPU heavy).
-- CPS mode: precise 0.1–500 CPS with high-res scheduling + brief busy-wait.
+Features:
+- Dark modern UI
+- Left / Right / Middle click selection
+- Single or Double click
+- CPS mode (0.1-500) with precise timing
+- MAX mode (fastest possible)
+- Randomized interval option (humanized clicking)
+- Live click counter
+- F6 hotkey toggle (changed from F4 to avoid browser conflicts)
 """
 
+import random
 import threading
 import time
 import tkinter as tk
@@ -24,7 +31,7 @@ try:
 except ImportError:
     raise SystemExit("pynput is required. Run: pip install pynput")
 
-# Remove PyAutoGUI's built-in throttles (critical to exceed ~10 CPS)
+# Remove PyAutoGUI's built-in throttles
 pyautogui.PAUSE = 0.0
 for attr in ("MINIMUM_SLEEP", "MINIMUM_DURATION"):
     if hasattr(pyautogui, attr):
@@ -34,20 +41,13 @@ if hasattr(pyautogui, "DARWIN_CATCH_UP_TIME"):
 
 
 def sleep_until(target_time: float):
-    """
-    Sleep efficiently until target_time using coarse sleep, then a short busy-wait.
-    This helps achieve high CPS despite OS timer granularity limits.
-    """
     while True:
-        now = time.perf_counter()
-        remaining = target_time - now
+        remaining = target_time - time.perf_counter()
         if remaining <= 0:
             return
-        # Coarse sleep when there is comfortable margin
-        if remaining > 0.002:  # >2 ms remaining
-            time.sleep(remaining - 0.001)  # leave ~1 ms for final spin
+        if remaining > 0.002:
+            time.sleep(remaining - 0.001)
         else:
-            # Final busy-wait for sub-ms precision
             while time.perf_counter() < target_time:
                 pass
             return
@@ -58,13 +58,15 @@ class AutoClicker:
         self.enabled = False
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
-        self.click_button = 'left'
-        self.cps = 10.0        # active CPS for CPS mode
-        self.max_mode = False  # fast-as-possible mode
+        self.click_button = "left"
+        self.double_click = False
+        self.cps = 10.0
+        self.max_mode = False
+        self.randomize = False
+        self.click_count = 0
 
     def set_cps(self, cps: float):
         with self.lock:
-            # Clamp to 0.1..500.0
             self.cps = max(0.1, min(500.0, float(cps)))
 
     def set_max_mode(self, enabled: bool):
@@ -73,12 +75,17 @@ class AutoClicker:
 
     def get_interval(self) -> float:
         with self.lock:
-            cps = self.cps
-        return 1.0 / cps
+            interval = 1.0 / self.cps
+            if self.randomize:
+                # +/- 20% randomization
+                interval *= random.uniform(0.8, 1.2)
+        return interval
 
     def toggle(self):
         with self.lock:
             self.enabled = not self.enabled
+            if self.enabled:
+                self.click_count = 0
         return self.enabled
 
     def is_enabled(self) -> bool:
@@ -94,38 +101,38 @@ class AutoClicker:
         with self.lock:
             self.enabled = False
 
+    def do_click(self):
+        if self.double_click:
+            pyautogui.doubleClick(button=self.click_button)
+        else:
+            pyautogui.click(button=self.click_button)
+        with self.lock:
+            self.click_count += 1
+
     def click_loop(self, on_tick=None):
-        """
-        Worker thread: in MAX mode, clicks in a tight loop (no intentional sleeps).
-        In CPS mode, uses a high-res schedule with brief busy-wait for precision.
-        """
         while not self.stop_event.is_set():
             if not self.is_enabled():
-                time.sleep(0.02)  # tiny idle while disabled
+                time.sleep(0.02)
                 if on_tick:
                     on_tick()
                 continue
 
             if self.is_max_mode():
-                # Tight loop: click as fast as possible (CPU intensive).
                 try:
                     while self.is_enabled() and not self.stop_event.is_set() and self.is_max_mode():
-                        pyautogui.click(button=self.click_button)
-                        # intentionally no sleep
+                        self.do_click()
                 except Exception as e:
                     with self.lock:
                         self.enabled = False
                     if on_tick:
                         on_tick(error=str(e))
             else:
-                # CPS mode with precise scheduling
-                interval = self.get_interval()
                 next_time = time.perf_counter()
                 try:
                     while self.is_enabled() and not self.stop_event.is_set() and not self.is_max_mode():
-                        pyautogui.click(button=self.click_button)
+                        self.do_click()
+                        interval = self.get_interval()
                         next_time += interval
-                        # Sleep efficiently until the exact next_time
                         sleep_until(next_time)
                 except Exception as e:
                     with self.lock:
@@ -137,130 +144,250 @@ class AutoClicker:
                 on_tick()
 
 
+# -- Dark Theme Colors --
+BG = "#1a1a2e"
+BG_LIGHT = "#16213e"
+FG = "#e0e0e0"
+ACCENT = "#0f3460"
+ACCENT_HOVER = "#533483"
+GREEN = "#00c853"
+RED = "#ff1744"
+ENTRY_BG = "#0a0a1a"
+BORDER = "#2a2a4a"
+
+
+class DarkButton(tk.Canvas):
+    """Custom rounded dark button."""
+
+    def __init__(self, parent, text="", command=None, width=120, height=34,
+                 bg=ACCENT, fg=FG, hover_bg=ACCENT_HOVER, **kwargs):
+        super().__init__(parent, width=width, height=height,
+                         bg=parent["bg"], highlightthickness=0, **kwargs)
+        self.command = command
+        self._bg = bg
+        self._hover_bg = hover_bg
+        self._fg = fg
+        self._text = text
+        self._w = width
+        self._h = height
+        self._draw(bg)
+        self.bind("<Enter>", lambda e: self._draw(hover_bg))
+        self.bind("<Leave>", lambda e: self._draw(bg))
+        self.bind("<Button-1>", lambda e: self._on_click())
+
+    def _draw(self, fill):
+        self.delete("all")
+        r = 8
+        self.create_round_rect(2, 2, self._w - 2, self._h - 2, r, fill=fill, outline="")
+        self.create_text(self._w // 2, self._h // 2, text=self._text,
+                         fill=self._fg, font=("Segoe UI", 10, "bold"))
+
+    def create_round_rect(self, x1, y1, x2, y2, r, **kwargs):
+        points = [
+            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+
+    def _on_click(self):
+        if self.command:
+            self.command()
+
+    def set_text(self, text):
+        self._text = text
+        self._draw(self._bg)
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Autoclicker — F4 to Toggle")
-        self.geometry("440x270")
+        self.title("Autoclicker v2")
+        self.geometry("460x400")
         self.resizable(False, False)
+        self.configure(bg=BG)
 
         self.clicker = AutoClicker()
 
-        # UI state
-        self.status_var = tk.StringVar(value="Status: Disabled (press F4 or click Enable)")
-        self.cps_var = tk.StringVar(value=f"{self.clicker.cps}")
-        self.max_mode_var = tk.BooleanVar(value=False)
+        # -- Header --
+        header = tk.Frame(self, bg=ACCENT, height=50)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+        tk.Label(header, text="AUTOCLICKER", font=("Segoe UI", 16, "bold"),
+                 bg=ACCENT, fg=FG).pack(side=tk.LEFT, padx=16)
+        self.status_dot = tk.Canvas(header, width=16, height=16, bg=ACCENT, highlightthickness=0)
+        self.status_dot.pack(side=tk.RIGHT, padx=16)
+        self._draw_dot(False)
 
-        pad = 10
-        frm = ttk.Frame(self, padding=pad)
-        frm.pack(fill=tk.BOTH, expand=True)
+        main = tk.Frame(self, bg=BG, padx=20, pady=12)
+        main.pack(fill=tk.BOTH, expand=True)
 
-        # Status
-        ttk.Label(frm, textvariable=self.status_var, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, pad))
+        # -- Status --
+        self.status_var = tk.StringVar(value="DISABLED")
+        self.status_label = tk.Label(main, textvariable=self.status_var,
+                                     font=("Segoe UI", 12, "bold"), bg=BG, fg=RED)
+        self.status_label.pack(anchor="w", pady=(0, 8))
 
-        # Mode row
-        mode_row = ttk.Frame(frm)
-        mode_row.pack(fill=tk.X, pady=(0, 6))
-        self.max_chk = ttk.Checkbutton(
-            mode_row,
-            text="MAX mode (no delays; fastest possible)",
-            variable=self.max_mode_var,
-            command=self.on_toggle_max_mode
-        )
-        self.max_chk.pack(side=tk.LEFT)
+        # -- Click counter --
+        self.count_var = tk.StringVar(value="Clicks: 0")
+        tk.Label(main, textvariable=self.count_var, font=("Segoe UI", 9),
+                 bg=BG, fg="#888").pack(anchor="w", pady=(0, 10))
+
+        # -- Settings frame --
+        settings = tk.LabelFrame(main, text=" Settings ", font=("Segoe UI", 9, "bold"),
+                                 bg=BG_LIGHT, fg=FG, bd=1, relief=tk.GROOVE,
+                                 padx=12, pady=8)
+        settings.pack(fill=tk.X, pady=(0, 10))
 
         # CPS row
-        cps_row = ttk.Frame(frm)
-        cps_row.pack(fill=tk.X, pady=(0, 6))
-        ttk.Label(cps_row, text="Clicks per second (0.1–500):").pack(side=tk.LEFT)
-        self.cps_entry = ttk.Entry(cps_row, textvariable=self.cps_var, width=10)
-        self.cps_entry.pack(side=tk.LEFT, padx=(6, 8))
-        self.apply_btn = ttk.Button(cps_row, text="Apply CPS", command=self.apply_cps)
-        self.apply_btn.pack(side=tk.LEFT)
+        cps_row = tk.Frame(settings, bg=BG_LIGHT)
+        cps_row.pack(fill=tk.X, pady=4)
+        tk.Label(cps_row, text="CPS (0.1-500):", font=("Segoe UI", 9),
+                 bg=BG_LIGHT, fg=FG).pack(side=tk.LEFT)
+        self.cps_var = tk.StringVar(value="10")
+        self.cps_entry = tk.Entry(cps_row, textvariable=self.cps_var, width=8,
+                                  bg=ENTRY_BG, fg=FG, insertbackground=FG,
+                                  font=("Consolas", 10), bd=0, relief=tk.FLAT)
+        self.cps_entry.pack(side=tk.LEFT, padx=(8, 8))
+        DarkButton(cps_row, text="Apply", command=self.apply_cps,
+                   width=70, height=28).pack(side=tk.LEFT)
 
-        # Buttons
-        btn_row = ttk.Frame(frm)
-        btn_row.pack(fill=tk.X, pady=(6, pad))
-        self.toggle_btn = ttk.Button(btn_row, text="Enable", command=self.on_toggle)
+        # Mouse button row
+        btn_row = tk.Frame(settings, bg=BG_LIGHT)
+        btn_row.pack(fill=tk.X, pady=4)
+        tk.Label(btn_row, text="Button:", font=("Segoe UI", 9),
+                 bg=BG_LIGHT, fg=FG).pack(side=tk.LEFT)
+        self.btn_var = tk.StringVar(value="left")
+        for val, label in [("left", "Left"), ("right", "Right"), ("middle", "Middle")]:
+            rb = tk.Radiobutton(btn_row, text=label, variable=self.btn_var,
+                                value=val, command=self._update_button,
+                                bg=BG_LIGHT, fg=FG, selectcolor=ACCENT,
+                                activebackground=BG_LIGHT, activeforeground=FG,
+                                font=("Segoe UI", 9))
+            rb.pack(side=tk.LEFT, padx=(8, 0))
+
+        # Click type row
+        type_row = tk.Frame(settings, bg=BG_LIGHT)
+        type_row.pack(fill=tk.X, pady=4)
+        tk.Label(type_row, text="Click:", font=("Segoe UI", 9),
+                 bg=BG_LIGHT, fg=FG).pack(side=tk.LEFT)
+        self.click_type_var = tk.StringVar(value="single")
+        for val, label in [("single", "Single"), ("double", "Double")]:
+            rb = tk.Radiobutton(type_row, text=label, variable=self.click_type_var,
+                                value=val, command=self._update_click_type,
+                                bg=BG_LIGHT, fg=FG, selectcolor=ACCENT,
+                                activebackground=BG_LIGHT, activeforeground=FG,
+                                font=("Segoe UI", 9))
+            rb.pack(side=tk.LEFT, padx=(8, 0))
+
+        # Checkboxes row
+        chk_row = tk.Frame(settings, bg=BG_LIGHT)
+        chk_row.pack(fill=tk.X, pady=4)
+        self.max_mode_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(chk_row, text="MAX mode", variable=self.max_mode_var,
+                       command=self._toggle_max, bg=BG_LIGHT, fg=FG,
+                       selectcolor=ACCENT, activebackground=BG_LIGHT,
+                       activeforeground=FG, font=("Segoe UI", 9)).pack(side=tk.LEFT)
+        self.randomize_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(chk_row, text="Randomize intervals", variable=self.randomize_var,
+                       command=self._toggle_randomize, bg=BG_LIGHT, fg=FG,
+                       selectcolor=ACCENT, activebackground=BG_LIGHT,
+                       activeforeground=FG, font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(16, 0))
+
+        # -- Action buttons --
+        action_row = tk.Frame(main, bg=BG)
+        action_row.pack(fill=tk.X, pady=(4, 8))
+        self.toggle_btn = DarkButton(action_row, text="ENABLE", command=self.on_toggle,
+                                     width=140, height=38, bg="#006400", hover_bg=GREEN)
         self.toggle_btn.pack(side=tk.LEFT)
-        ttk.Button(btn_row, text="Quit", command=self.on_quit).pack(side=tk.RIGHT)
+        DarkButton(action_row, text="QUIT", command=self.on_quit,
+                   width=80, height=38, bg="#8b0000", hover_bg=RED).pack(side=tk.RIGHT)
 
-        ttk.Label(
-            frm,
-            text="Hotkey: F4 toggles on/off\nTip: Move mouse to a safe area before enabling.",
-            foreground="#555"
-        ).pack(anchor="w")
+        # -- Footer --
+        tk.Label(main, text="Press F6 to toggle  |  Move mouse to corner = emergency stop",
+                 font=("Segoe UI", 8), bg=BG, fg="#555").pack(anchor="w", pady=(4, 0))
 
         # Worker thread
-        self.worker = threading.Thread(target=self.clicker.click_loop, kwargs={"on_tick": self.on_tick}, daemon=True)
+        self.worker = threading.Thread(target=self.clicker.click_loop,
+                                       kwargs={"on_tick": self.on_tick}, daemon=True)
         self.worker.start()
 
-        # Global hotkey listener (F4)
+        # Global hotkey (F6)
         self.listener = keyboard.Listener(on_press=self.on_key_press)
         self.listener.daemon = True
         self.listener.start()
 
-        # Styling (optional)
-        try:
-            self.style = ttk.Style(self)
-            if 'vista' in self.style.theme_names():
-                self.style.theme_use('vista')
-        except Exception:
-            pass
-
-        # PyAutoGUI failsafe: move mouse to top-left corner to abort
         pyautogui.FAILSAFE = True
-
-        # Enter key applies CPS
         self.cps_entry.bind("<Return>", self.apply_cps)
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
 
-    def on_key_press(self, key):
-        try:
-            if key == keyboard.Key.f4:
-                self.safe_toggle()
-        except Exception:
-            pass
+        # Periodic UI update for click counter
+        self._update_counter()
 
-    def on_toggle_max_mode(self):
+    def _draw_dot(self, enabled):
+        self.status_dot.delete("all")
+        color = GREEN if enabled else RED
+        self.status_dot.create_oval(2, 2, 14, 14, fill=color, outline="")
+
+    def _update_button(self):
+        self.clicker.click_button = self.btn_var.get()
+
+    def _update_click_type(self):
+        self.clicker.double_click = self.click_type_var.get() == "double"
+
+    def _toggle_max(self):
         self.clicker.set_max_mode(self.max_mode_var.get())
-        self.update_status(self.clicker.is_enabled())
+
+    def _toggle_randomize(self):
+        with self.clicker.lock:
+            self.clicker.randomize = self.randomize_var.get()
+
+    def _update_counter(self):
+        with self.clicker.lock:
+            count = self.clicker.click_count
+        self.count_var.set(f"Clicks: {count:,}")
+        self.after(100, self._update_counter)
 
     def apply_cps(self, event=None):
         if self.max_mode_var.get():
-            messagebox.showinfo("MAX mode active", "Disable MAX mode to set a CPS limit.")
+            messagebox.showinfo("MAX mode", "Disable MAX mode to set CPS.")
             return
         raw = self.cps_var.get().strip()
         try:
             val = float(raw)
-            before = val
             self.clicker.set_cps(val)
-            # normalize text to actual clamped value
-            self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip('0').rstrip('.'))
-            if before != self.clicker.cps:
-                messagebox.showinfo("CPS adjusted", "CPS was clamped to the 0.1–500 range.")
+            self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip("0").rstrip("."))
+            if val != self.clicker.cps:
+                messagebox.showinfo("CPS", "Clamped to 0.1-500 range.")
         except ValueError:
-            messagebox.showerror("Invalid input", "Please enter a number for CPS (0.1–500).")
-            self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip('0').rstrip('.'))
+            messagebox.showerror("Invalid", "Enter a number (0.1-500).")
+            self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip("0").rstrip("."))
 
-        self.update_status(self.clicker.is_enabled())
-
-    def safe_toggle(self):
-        now_enabled = self.clicker.toggle()
-        self.update_status(now_enabled)
+    def on_key_press(self, key):
+        try:
+            if key == keyboard.Key.f6:
+                self.after(0, self.on_toggle)
+        except Exception:
+            pass
 
     def on_toggle(self):
-        self.safe_toggle()
-
-    def update_status(self, enabled: bool):
-        self.toggle_btn.config(text="Disable" if enabled else "Enable")
-        mode = "MAX" if self.max_mode_var.get() else f"{self.cps_var.get()} CPS"
-        self.status_var.set(f"Status: {'Enabled' if enabled else 'Disabled'} (F4 to toggle) — Mode: {mode}")
+        now_enabled = self.clicker.toggle()
+        self._draw_dot(now_enabled)
+        self.status_var.set("ENABLED" if now_enabled else "DISABLED")
+        self.status_label.config(fg=GREEN if now_enabled else RED)
+        self.toggle_btn.set_text("DISABLE" if now_enabled else "ENABLE")
+        if now_enabled:
+            self.toggle_btn._bg = "#8b0000"
+            self.toggle_btn._hover_bg = RED
+        else:
+            self.toggle_btn._bg = "#006400"
+            self.toggle_btn._hover_bg = GREEN
+        self.toggle_btn._draw(self.toggle_btn._bg)
 
     def on_tick(self, error: str | None = None):
         if error:
-            messagebox.showerror("Autoclick error", f"Clicking stopped due to error:\n{error}")
-            self.update_status(False)
+            self.after(0, lambda: messagebox.showerror("Error", error))
+            self.after(0, lambda: self.on_toggle())
 
     def on_quit(self):
         try:

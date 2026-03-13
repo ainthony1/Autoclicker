@@ -1,2 +1,9 @@
 # Virtual Environment
 venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
