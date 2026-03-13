@@ -1,57 +1,112 @@
 """
-Autoclicker v2 — Dark themed, F8 toggle, CPS or MAX mode
+Autoclicker v2.1 — Dark themed, F8 toggle, CPS or MAX mode
 
 Deps:
-  pip install pyautogui pynput
+  pip install pynput
 
 Features:
 - Dark modern UI
 - Left / Right / Middle click selection
 - Single or Double click
-- CPS mode (0.1-500) with precise timing
+- CPS mode (0.1-1000) with precise timing
 - MAX mode (fastest possible)
 - Randomized interval option (humanized clicking)
 - Live click counter
-- F8 hotkey toggle (changed from F4 to avoid browser conflicts)
+- F8 hotkey toggle
+- Direct Win32 SendInput for minimal CPU usage
 """
 
+import ctypes
+import ctypes.wintypes
 import random
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
-
-try:
-    import pyautogui
-except ImportError:
-    raise SystemExit("pyautogui is required. Run: pip install pyautogui")
+from tkinter import messagebox
 
 try:
     from pynput import keyboard
 except ImportError:
     raise SystemExit("pynput is required. Run: pip install pynput")
 
-# Remove PyAutoGUI's built-in throttles
-pyautogui.PAUSE = 0.0
-for attr in ("MINIMUM_SLEEP", "MINIMUM_DURATION"):
-    if hasattr(pyautogui, attr):
-        setattr(pyautogui, attr, 0.0)
-if hasattr(pyautogui, "DARWIN_CATCH_UP_TIME"):
-    pyautogui.DARWIN_CATCH_UP_TIME = 0
+
+# ── Win32 SendInput click (bypasses pyautogui overhead entirely) ──
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.wintypes.LONG),
+        ("dy", ctypes.wintypes.LONG),
+        ("mouseData", ctypes.wintypes.DWORD),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("time", ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT)]
+    _fields_ = [("type", ctypes.wintypes.DWORD), ("_input", _INPUT)]
+
+MOUSEEVENTF_LEFTDOWN   = 0x0002
+MOUSEEVENTF_LEFTUP     = 0x0004
+MOUSEEVENTF_RIGHTDOWN  = 0x0008
+MOUSEEVENTF_RIGHTUP    = 0x0010
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP   = 0x0040
+
+_BUTTON_FLAGS = {
+    "left":   (MOUSEEVENTF_LEFTDOWN,   MOUSEEVENTF_LEFTUP),
+    "right":  (MOUSEEVENTF_RIGHTDOWN,  MOUSEEVENTF_RIGHTUP),
+    "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+}
+
+_SendInput = ctypes.windll.user32.SendInput
+_GetCursorPos = ctypes.windll.user32.GetCursorPos
+
+def _make_mouse_input(flags):
+    mi = MOUSEINPUT(0, 0, 0, flags, 0, ctypes.pointer(ctypes.c_ulong(0)))
+    inp = INPUT(type=0)
+    inp._input.mi = mi
+    return inp
+
+def fast_click(button="left"):
+    """Single click using SendInput — near zero overhead."""
+    down_flag, up_flag = _BUTTON_FLAGS[button]
+    inputs = (INPUT * 2)(_make_mouse_input(down_flag), _make_mouse_input(up_flag))
+    _SendInput(2, inputs, ctypes.sizeof(INPUT))
+
+def fast_double_click(button="left"):
+    """Double click using SendInput."""
+    down_flag, up_flag = _BUTTON_FLAGS[button]
+    inp_down = _make_mouse_input(down_flag)
+    inp_up = _make_mouse_input(up_flag)
+    inputs = (INPUT * 4)(inp_down, inp_up, inp_down, inp_up)
+    _SendInput(4, inputs, ctypes.sizeof(INPUT))
+
+def _cursor_in_corner() -> bool:
+    """Check if mouse is in top-left corner (failsafe)."""
+    pt = ctypes.wintypes.POINT()
+    _GetCursorPos(ctypes.byref(pt))
+    return pt.x <= 5 and pt.y <= 5
 
 
-def sleep_until(target_time: float):
-    while True:
-        remaining = target_time - time.perf_counter()
-        if remaining <= 0:
-            return
-        if remaining > 0.002:
-            time.sleep(remaining - 0.001)
-        else:
-            while time.perf_counter() < target_time:
-                pass
-            return
+# ── Precise sleep ──
 
+_perf_counter = time.perf_counter
+_sleep = time.sleep
+
+def sleep_until(target: float):
+    remaining = target - _perf_counter()
+    if remaining <= 0:
+        return
+    if remaining > 0.005:
+        _sleep(remaining - 0.003)
+    # Spin for final precision
+    while _perf_counter() < target:
+        pass
+
+
+# ── AutoClicker engine ──
 
 class AutoClicker:
     def __init__(self):
@@ -67,19 +122,11 @@ class AutoClicker:
 
     def set_cps(self, cps: float):
         with self.lock:
-            self.cps = max(0.1, min(500.0, float(cps)))
+            self.cps = max(0.1, min(1000.0, float(cps)))
 
     def set_max_mode(self, enabled: bool):
         with self.lock:
             self.max_mode = bool(enabled)
-
-    def get_interval(self) -> float:
-        with self.lock:
-            interval = 1.0 / self.cps
-            if self.randomize:
-                # +/- 20% randomization
-                interval *= random.uniform(0.8, 1.2)
-        return interval
 
     def toggle(self):
         with self.lock:
@@ -88,63 +135,95 @@ class AutoClicker:
                 self.click_count = 0
         return self.enabled
 
-    def is_enabled(self) -> bool:
-        with self.lock:
-            return self.enabled
-
-    def is_max_mode(self) -> bool:
-        with self.lock:
-            return self.max_mode
-
     def stop(self):
         self.stop_event.set()
         with self.lock:
             self.enabled = False
 
-    def do_click(self):
-        if self.double_click:
-            pyautogui.doubleClick(button=self.click_button)
-        else:
-            pyautogui.click(button=self.click_button)
-        with self.lock:
-            self.click_count += 1
-
     def click_loop(self, on_tick=None):
-        while not self.stop_event.is_set():
-            if not self.is_enabled():
-                time.sleep(0.02)
-                if on_tick:
-                    on_tick()
+        stop = self.stop_event
+        lock = self.lock
+
+        while not stop.is_set():
+            # Wait until enabled
+            if not self.enabled:
+                _sleep(0.02)
                 continue
 
-            if self.is_max_mode():
-                try:
-                    while self.is_enabled() and not self.stop_event.is_set() and self.is_max_mode():
-                        self.do_click()
-                except Exception as e:
-                    with self.lock:
-                        self.enabled = False
-                    if on_tick:
-                        on_tick(error=str(e))
-            else:
-                next_time = time.perf_counter()
-                try:
-                    while self.is_enabled() and not self.stop_event.is_set() and not self.is_max_mode():
-                        self.do_click()
-                        interval = self.get_interval()
+            # Snapshot settings once
+            with lock:
+                max_mode = self.max_mode
+                button = self.click_button
+                dbl = self.double_click
+                cps = self.cps
+                randomize = self.randomize
+
+            click_fn = fast_double_click if dbl else fast_click
+            failsafe_check = 0
+
+            try:
+                if max_mode:
+                    while self.enabled and not stop.is_set():
+                        click_fn(button)
+                        self.click_count += 1
+                        # Check failsafe every 256 clicks (cheap counter)
+                        failsafe_check += 1
+                        if failsafe_check & 0xFF == 0:
+                            if _cursor_in_corner():
+                                with lock:
+                                    self.enabled = False
+                                break
+                            # Re-read settings periodically
+                            with lock:
+                                if not self.max_mode:
+                                    break
+                                button = self.click_button
+                                dbl = self.double_click
+                            click_fn = fast_double_click if dbl else fast_click
+                else:
+                    interval = 1.0 / cps
+                    next_time = _perf_counter()
+                    while self.enabled and not stop.is_set():
+                        click_fn(button)
+                        self.click_count += 1
                         next_time += interval
-                        sleep_until(next_time)
-                except Exception as e:
-                    with self.lock:
-                        self.enabled = False
-                    if on_tick:
-                        on_tick(error=str(e))
+                        if randomize:
+                            # Apply jitter: +/- 20%
+                            jitter = interval * random.uniform(-0.2, 0.2)
+                            sleep_until(next_time + jitter)
+                        else:
+                            sleep_until(next_time)
+                        # Failsafe + settings refresh every 128 clicks
+                        failsafe_check += 1
+                        if failsafe_check & 0x7F == 0:
+                            if _cursor_in_corner():
+                                with lock:
+                                    self.enabled = False
+                                break
+                            with lock:
+                                if self.max_mode:
+                                    break
+                                new_cps = self.cps
+                                button = self.click_button
+                                dbl = self.double_click
+                                randomize = self.randomize
+                            if new_cps != cps:
+                                cps = new_cps
+                                interval = 1.0 / cps
+                                next_time = _perf_counter()
+                            click_fn = fast_double_click if dbl else fast_click
+            except Exception as e:
+                with lock:
+                    self.enabled = False
+                if on_tick:
+                    on_tick(error=str(e))
 
             if on_tick:
                 on_tick()
 
 
-# -- Dark Theme Colors --
+# ── Dark Theme ──
+
 BG = "#1a1a2e"
 BG_LIGHT = "#16213e"
 FG = "#e0e0e0"
@@ -153,12 +232,9 @@ ACCENT_HOVER = "#533483"
 GREEN = "#00c853"
 RED = "#ff1744"
 ENTRY_BG = "#0a0a1a"
-BORDER = "#2a2a4a"
 
 
 class DarkButton(tk.Button):
-    """Styled dark button with hover effect."""
-
     def __init__(self, parent, text="", command=None, width=12, height=1,
                  bg=ACCENT, fg=FG, hover_bg=ACCENT_HOVER, **kwargs):
         super().__init__(parent, text=text, command=command,
@@ -180,17 +256,19 @@ class DarkButton(tk.Button):
         self.config(bg=bg, activebackground=hover_bg)
 
 
+# ── App ──
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Autoclicker v2")
+        self.title("Autoclicker v2.1")
         self.geometry("460x400")
         self.resizable(False, False)
         self.configure(bg=BG)
 
         self.clicker = AutoClicker()
 
-        # -- Header --
+        # Header
         header = tk.Frame(self, bg=ACCENT, height=50)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
@@ -203,18 +281,18 @@ class App(tk.Tk):
         main = tk.Frame(self, bg=BG, padx=20, pady=12)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # -- Status --
+        # Status
         self.status_var = tk.StringVar(value="DISABLED")
         self.status_label = tk.Label(main, textvariable=self.status_var,
                                      font=("Segoe UI", 12, "bold"), bg=BG, fg=RED)
         self.status_label.pack(anchor="w", pady=(0, 8))
 
-        # -- Click counter --
+        # Click counter
         self.count_var = tk.StringVar(value="Clicks: 0")
         tk.Label(main, textvariable=self.count_var, font=("Segoe UI", 9),
                  bg=BG, fg="#888").pack(anchor="w", pady=(0, 10))
 
-        # -- Settings frame --
+        # Settings
         settings = tk.LabelFrame(main, text=" Settings ", font=("Segoe UI", 9, "bold"),
                                  bg=BG_LIGHT, fg=FG, bd=1, relief=tk.GROOVE,
                                  padx=12, pady=8)
@@ -223,7 +301,7 @@ class App(tk.Tk):
         # CPS row
         cps_row = tk.Frame(settings, bg=BG_LIGHT)
         cps_row.pack(fill=tk.X, pady=4)
-        tk.Label(cps_row, text="CPS (0.1-500):", font=("Segoe UI", 9),
+        tk.Label(cps_row, text="CPS (0.1-1000):", font=("Segoe UI", 9),
                  bg=BG_LIGHT, fg=FG).pack(side=tk.LEFT)
         self.cps_var = tk.StringVar(value="10")
         self.cps_entry = tk.Entry(cps_row, textvariable=self.cps_var, width=8,
@@ -275,7 +353,7 @@ class App(tk.Tk):
                        selectcolor=ACCENT, activebackground=BG_LIGHT,
                        activeforeground=FG, font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(16, 0))
 
-        # -- Action buttons --
+        # Action buttons
         action_row = tk.Frame(main, bg=BG)
         action_row.pack(fill=tk.X, pady=(4, 8))
         self.toggle_btn = DarkButton(action_row, text="ENABLE", command=self.on_toggle,
@@ -284,7 +362,7 @@ class App(tk.Tk):
         DarkButton(action_row, text="QUIT", command=self.on_quit,
                    width=8, height=1, bg="#8b0000", hover_bg=RED).pack(side=tk.RIGHT)
 
-        # -- Footer --
+        # Footer
         tk.Label(main, text="Press F8 to toggle  |  Move mouse to corner = emergency stop",
                  font=("Segoe UI", 8), bg=BG, fg="#555").pack(anchor="w", pady=(4, 0))
 
@@ -293,16 +371,13 @@ class App(tk.Tk):
                                        kwargs={"on_tick": self.on_tick}, daemon=True)
         self.worker.start()
 
-        # Global hotkey (F8)
+        # Global hotkey
         self.listener = keyboard.Listener(on_press=self.on_key_press)
         self.listener.daemon = True
         self.listener.start()
 
-        pyautogui.FAILSAFE = True
         self.cps_entry.bind("<Return>", self.apply_cps)
         self.protocol("WM_DELETE_WINDOW", self.on_quit)
-
-        # Periodic UI update for click counter
         self._update_counter()
 
     def _draw_dot(self, enabled):
@@ -324,10 +399,8 @@ class App(tk.Tk):
             self.clicker.randomize = self.randomize_var.get()
 
     def _update_counter(self):
-        with self.clicker.lock:
-            count = self.clicker.click_count
-        self.count_var.set(f"Clicks: {count:,}")
-        self.after(100, self._update_counter)
+        self.count_var.set(f"Clicks: {self.clicker.click_count:,}")
+        self.after(200, self._update_counter)
 
     def apply_cps(self, event=None):
         if self.max_mode_var.get():
@@ -339,9 +412,9 @@ class App(tk.Tk):
             self.clicker.set_cps(val)
             self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip("0").rstrip("."))
             if val != self.clicker.cps:
-                messagebox.showinfo("CPS", "Clamped to 0.1-500 range.")
+                messagebox.showinfo("CPS", "Clamped to 0.1-1000 range.")
         except ValueError:
-            messagebox.showerror("Invalid", "Enter a number (0.1-500).")
+            messagebox.showerror("Invalid", "Enter a number (0.1-1000).")
             self.cps_var.set(f"{self.clicker.cps:.2f}".rstrip("0").rstrip("."))
 
     def on_key_press(self, key):
